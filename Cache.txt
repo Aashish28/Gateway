@@ -1,0 +1,14 @@
+Hello Team,
+Can you please do cache clean up in IPP.
+Run below following tcoes and programs - 
+/IWBEP/CACHE_CLEANUP seelct checkbox
+/IWFND/CACHE_CLEANUP with *
+
+Run below programs via SE38/SA38
+/UI5/APP_INDEX_CALCULATE - Select full calculation
+/UI2/DELETE_CACHE_AFTER_IMP
+/UI2/INVALIDATE_GLOBAL_CACHES
+/UI2/INVALIDATE_CLIENT_CACHES
+/UI2/CHIP_SYNCHRONIZE_CACHE
+
+// <!--				data-sap-ui-onInit="module:fl/demo/index"-->

@@ -1,0 +1,213 @@
+  METHOD /iwbep/if_mgw_appl_srv_runtime~create_stream.
+
+    DATA: lw_file         TYPE zsc_file_upload,
+          base64          TYPE string,
+          lv_string       TYPE string,
+          lv_xstring      TYPE xstring,
+          lo_facade       TYPE REF TO /iwbep/if_mgw_dp_int_facade,
+          lt_header_param TYPE tihttpnvp.
+    FIELD-SYMBOLS:<fs_key> TYPE /iwbep/s_mgw_name_value_pair.
+    lo_facade ?= /iwbep/if_mgw_conv_srv_runtime~get_dp_facade( ).
+    lt_header_param = lo_facade->get_request_header( ).
+    READ TABLE lt_header_param INTO DATA(lw_header_param) INDEX 1.
+
+*    READ TABLE it_key_tab ASSIGNING <fs_key> INDEX 1.
+    lw_file-filename = iv_slug.
+    lw_file-filecontent    = is_media_resource-value.
+    lw_file-mimetype = is_media_resource-mime_type.
+    base64 = is_media_resource-value.
+*    CALL METHOD cl_http_utility=>if_http_utility~decode_base64
+*      EXPORTING
+*        encoded = base64
+*      RECEIVING
+*        decoded = lv_xstring.
+
+
+    CLEAR lv_string.
+    DATA lo_conv TYPE REF TO cl_abap_conv_in_ce.
+
+    CALL METHOD cl_abap_conv_in_ce=>create
+      EXPORTING
+        encoding    = 'UTF-8'
+        endian      = 'L'
+        ignore_cerr = 'X'
+        replacement = '#'
+        input       = is_media_resource-value
+      RECEIVING
+        conv        = lo_conv.
+
+    CALL METHOD lo_conv->read
+      IMPORTING
+        data = lv_string.
+
+
+
+    CALL FUNCTION 'SCMS_BASE64_DECODE_STR'
+      EXPORTING
+        input  = lv_string
+      IMPORTING
+        output = lv_xstring
+      EXCEPTIONS
+        failed = 1
+        OTHERS = 2.
+
+    DATA(lv_len)  = xstrlen( lv_xstring ).
+    DATA  lt_content  TYPE soli_tab.      "Content
+*Convert Text to Binary
+    CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+      EXPORTING
+        buffer        = lv_xstring
+      IMPORTING
+        output_length = lv_len
+      TABLES
+        binary_tab    = lt_content[].
+
+*Convert Binary to String
+    CALL FUNCTION 'SCMS_BINARY_TO_STRING'
+      EXPORTING
+        input_length = lv_len
+      IMPORTING
+        text_buffer  = lv_string
+      TABLES
+        binary_tab   = lt_content[]
+      EXCEPTIONS
+        failed       = 1
+        OTHERS       = 2.
+
+
+*Decode Base64 String to String
+    CALL METHOD cl_http_utility=>if_http_utility~decode_base64
+      EXPORTING
+        encoded = lv_string
+      RECEIVING
+        decoded = DATA(lv_string1).
+
+
+    DATA im_filename TYPE string.
+    DATA im_media_resource TYPE xstringval.
+    DATA im_mime_type TYPE char100.
+* * Internal tables declaration
+    DATA:
+      lt_worksheets TYPE STANDARD TABLE OF string,
+      lt_contents   TYPE string_table.
+* Local variables declaration
+    DATA:
+      lv_name TYPE string,
+      "lv_string TYPE string,
+* lv_msg TYPE string,
+      lv_flag TYPE boolean.
+* References declarations
+    DATA:
+      lref_excel      TYPE REF TO cl_fdt_xl_spreadsheet,
+      lref_excel_core TYPE REF TO cx_fdt_excel_core,
+      lref_data       TYPE REF TO data.
+* Field symbols declarations
+    FIELD-SYMBOLS:
+      <fs_table>    TYPE table,
+      <fs_data>     TYPE any,
+      <fs_data_str> TYPE any,
+      <fs_comp>     TYPE any,
+      <fs_output>   TYPE string.
+
+    DATA lo_tech_read_request_context TYPE REF TO /iwbep/cl_sb_gen_read_aftr_crt.
+    DATA ls_key TYPE /iwbep/s_mgw_tech_pair.
+    DATA lt_keys TYPE /iwbep/t_mgw_tech_pairs.
+    DATA lv_msg_success TYPE string.
+    DATA lv_msg_error TYPE string.
+    DATA lv_entityset_name TYPE string.
+    FIELD-SYMBOLS: <ls_data> TYPE any.
+    DATA ls_entity TYPE REF TO data.
+*IF iv_entity_name = 'ETUpload'.
+* Map request input fields to function module parameters
+    im_mime_type = is_media_resource-mime_type.
+    im_media_resource = lv_xstring. "is_media_resource-value.
+    im_filename = iv_slug.
+
+* im_filename = 'ew Microsoft Excel Worksheet.xlsx'.
+    TRY.
+* Create object of class to read .xlsx file contents
+        CREATE OBJECT lref_excel
+          EXPORTING
+            document_name = im_filename
+            xdocument     = im_media_resource.
+
+      CATCH cx_fdt_excel_core INTO lref_excel_core.
+* CLEAR lv_msg.
+* Call method to get error message text
+        CALL METHOD lref_excel_core->if_message~get_text
+          RECEIVING
+            result = lv_msg_error.
+*<< Display error message returned in lv_msg >>
+        RETURN.
+    ENDTRY.
+
+* Call method to get list of worksheets in the .xlsx file
+    lref_excel->if_fdt_doc_spreadsheet~get_worksheet_names(
+    IMPORTING
+    worksheet_names = lt_worksheets ).
+* Condition to check whether .xlsx file has any active worksheets
+    IF lt_worksheets IS NOT INITIAL.
+* Read active worksheet
+      READ TABLE lt_worksheets INDEX 1 INTO lv_name.
+    ELSE.
+*<< Display error message >>
+      RETURN.
+    ENDIF.
+* Get reference of .xlsx file contents in the active worksheet
+    lref_data = lref_excel->if_fdt_doc_spreadsheet~get_itab_from_worksheet( lv_name ).
+* Fetch all records in the active worksheet
+    ASSIGN lref_data->* TO <fs_table>.
+* Prepare exporting table with .xlsx file contents
+    IF <fs_table> IS NOT ASSIGNED.
+*<< Display error message >>
+      RETURN.
+    ENDIF.
+* Loop dynamic table to prepare final table contents to pass in exporting parameter
+    LOOP AT <fs_table> ASSIGNING <fs_data>.
+* Initialize flag
+      lv_flag = abap_true.
+      WHILE lv_flag = abap_true.
+* Read columnwise entries
+        ASSIGN COMPONENT sy-index OF STRUCTURE <fs_data> TO <fs_comp>.
+        IF <fs_comp> IS NOT ASSIGNED.
+          lv_flag = abap_false.
+* Exit the loop when a row ends
+          EXIT.
+        ELSE.
+* Concatenate each cell data in a row into string seperated by '||'
+          CONCATENATE lv_string <fs_comp> INTO lv_string SEPARATED BY '||'.
+        ENDIF.
+* Unassign field symbol
+        UNASSIGN <fs_comp>.
+      ENDWHILE.
+* Shift final string having a row left by 2 places to remove leading '||'
+      SHIFT lv_string LEFT BY 2 PLACES.
+* Append prepared row data to exporting parameter
+      APPEND lv_string TO lt_contents.
+* Clear variable having row data
+      CLEAR lv_string.
+    ENDLOOP.
+    DATA:lt_final_contents TYPE STANDARD TABLE OF zsa_t_fiori.
+    DATA:ls_contents TYPE zsa_t_fiori.
+* Loop internal table to split records and fill in target internal table
+*LOOP AT lt_contents ASSIGNING <fs_output>.
+*SPLIT <fs_output>
+*AT '||'
+*INTO ls_contents-id
+*ls_contents-name
+*ls_contents-gender
+** Append split records in internal table
+*APPEND ls_contents TO lt_final_contents.
+*ENDLOOP.
+*IF lt_final_contents IS NOT INITIAL.
+*delete lt_final_contents INDEX 1.
+*MODIFY zvtest1 FROM TABLE lt_final_contents.
+*IF sy-subrc EQ 0.
+*lv_msg_success = 'Data updated successfully'.
+*ELSE.
+*lv_msg_error = 'Unable to update Table'.
+*ENDIF.
+*ENDIF.
+
+
+  ENDMETHOD.
